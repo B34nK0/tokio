@@ -30,6 +30,8 @@ pub(super) struct Inner<T: 'static> {
     /// When both `u16` values are the same, there is no active stealer.
     ///
     /// Tracking an in-progress stealer prevents a wrapping scenario.
+    /// 前16位为localthread 处理的位置， 后16位steal thread处理的位置
+    /// 当steal 过来窃取num 个 worker，(steal --- real_head)buffer的内容给steal，  real_head += num
     head: AtomicU32,
 
     /// Only updated by producer thread but read by many threads.
@@ -116,6 +118,7 @@ impl<T> Local<T> {
             } else if steal != real {
                 // Concurrently stealing, this will free up capacity, so only
                 // push the task onto the inject queue
+                // 有stealer 那把task放到共享queue 让stealer获取
                 inject.push(task);
                 return;
             } else {
@@ -147,6 +150,7 @@ impl<T> Local<T> {
 
         // Make the task available. Synchronizes with a load in
         // `steal_into2`.
+        // 只有一个producer，所以不需要cas
         self.inner.tail.store(tail.wrapping_add(1), Release);
     }
 
@@ -286,7 +290,7 @@ impl<T> Local<T> {
                 Err(actual) => head = actual,
             }
         };
-
+// 获取buffer内容 task指针
         Some(self.inner.buffer[idx].with(|ptr| unsafe { ptr::read(ptr).assume_init() }))
     }
 }
@@ -365,6 +369,7 @@ impl<T> Steal<T> {
             }
 
             // Number of available tasks to steal
+            // 最多偷一半
             let n = src_tail.wrapping_sub(src_head_real);
             let n = n - n / 2;
 

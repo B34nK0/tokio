@@ -94,6 +94,7 @@ impl Drop for ThreadPool {
 
 impl Spawner {
     /// Spawns a future onto the thread pool
+    /// 对外暴露的future
     pub(crate) fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
     where
         F: crate::future::Future + Send + 'static,

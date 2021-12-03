@@ -50,7 +50,9 @@ struct Inner {
 }
 
 struct Shared {
+    // blocking queue从这里拿
     queue: VecDeque<Task>,
+    // 多少个thread    
     num_th: usize,
     num_idle: u32,
     num_notify: u32,
@@ -182,17 +184,19 @@ impl Spawner {
                 // no need to even push this task; it would never get picked up
                 return Err(());
             }
-
+// 共享队列中
             shared.queue.push_back(task);
 
             if shared.num_idle == 0 {
                 // No threads are able to process the task.
-
+// 等thread空闲
                 if shared.num_th == self.inner.thread_cap {
                     // At max number of threads
                     None
                 } else {
+                    // 创建thread
                     shared.num_th += 1;
+                    // 单producer 单comsumer
                     assert!(shared.shutdown_tx.is_some());
                     shared.shutdown_tx.clone()
                 }
@@ -204,6 +208,7 @@ impl Spawner {
                 // consistent state.
                 shared.num_idle -= 1;
                 shared.num_notify += 1;
+                // 唤醒thread
                 self.inner.condvar.notify_one();
                 None
             }
@@ -259,6 +264,7 @@ impl Inner {
 
         'main: loop {
             // BUSY
+            //不停的到queue上拿task
             while let Some(task) = shared.queue.pop_front() {
                 drop(shared);
                 task.run();
@@ -268,8 +274,8 @@ impl Inner {
 
             // IDLE
             shared.num_idle += 1;
-
             while !shared.shutdown {
+                // 等待notify 唤醒
                 let lock_result = self.condvar.wait_timeout(shared, self.keep_alive).unwrap();
 
                 shared = lock_result.0;
@@ -285,13 +291,15 @@ impl Inner {
 
                 // Even if the condvar "timed out", if the pool is entering the
                 // shutdown phase, we want to perform the cleanup logic.
+                // 超时了，但是没活干呀，那销毁呗
                 if !shared.shutdown && timeout_result.timed_out() {
                     // We'll join the prior timed-out thread's JoinHandle after dropping the lock.
                     // This isn't done when shutting down, because the thread calling shutdown will
                     // handle joining everything.
                     let my_handle = shared.worker_threads.remove(&worker_thread_id);
+                    // 既然没有办法释放自己的资源，那把handler让接下来的线程处理，总是等待下一个thread join handler
                     join_on_thread = std::mem::replace(&mut shared.last_exiting_thread, my_handle);
-
+                    // 跳出loop区销毁
                     break 'main;
                 }
 
@@ -300,6 +308,7 @@ impl Inner {
 
             if shared.shutdown {
                 // Drain the queue
+                // 把queue的taks showdown
                 while let Some(task) = shared.queue.pop_front() {
                     drop(shared);
                     task.shutdown();

@@ -193,10 +193,12 @@ pub(super) fn create(
     after_unpark: Option<Callback>,
 ) -> (Arc<Shared>, Launch) {
     let mut cores = vec![];
+    // 允许远端访问
     let mut remotes = vec![];
 
     // Create the local queues
     for i in 0..size {
+        // steal local 指向同份task数据
         let (steal, run_queue) = queue::local();
 
         let park = park.clone();
@@ -212,12 +214,13 @@ pub(super) fn create(
             stats: WorkerStatsBatcher::new(i),
             rand: FastRand::new(seed()),
         }));
-
+// 通过unpark唤醒空闲的threa 来获取数据
         remotes.push(Remote { steal, unpark });
     }
 
     let shared = Arc::new(Shared {
         remotes: remotes.into_boxed_slice(),
+        //worker共享的队列
         inject: Inject::new(),
         idle: Idle::new(size),
         owned: OwnedTasks::new(),
@@ -529,6 +532,7 @@ impl Core {
 
     /// Return the next notified task available to this worker.
     fn next_task(&mut self, worker: &Worker) -> Option<Notified> {
+        // 先看本地local如果 local有，拿local， local没有去拿全局，再强制 每61次去全局拿
         if self.tick % GLOBAL_POLL_INTERVAL == 0 {
             worker.inject().pop().or_else(|| self.next_local_task())
         } else {
@@ -541,18 +545,21 @@ impl Core {
     }
 
     fn steal_work(&mut self, worker: &Worker) -> Option<Notified> {
+        // 检测能不能去steal，不允许所有线程steal，根据经验值限制
         if !self.transition_to_searching(worker) {
             return None;
         }
 
         let num = worker.shared.remotes.len();
         // Start from a random worker
+        // 随机数去偷
         let start = self.rand.fastrand_n(num as u32) as usize;
 
         for i in 0..num {
             let i = (start + i) % num;
 
             // Don't steal from ourself! We know we don't have work.
+            // 不能偷自己
             if i == worker.index {
                 continue;
             }
@@ -692,6 +699,7 @@ impl Shared {
         T: Future + Send + 'static,
         T::Output: Send + 'static,
     {
+        // 把future 编程handle notify
         let (handle, notified) = me.owned.bind(future, me.clone());
 
         if let Some(notified) = notified {
@@ -723,7 +731,7 @@ impl Shared {
             self.notify_parked();
         })
     }
-
+// 把task放入本地的queue
     fn schedule_local(&self, core: &mut Core, task: Notified, is_yield: bool) {
         // Spawning from the worker thread. If scheduling a "yield" then the
         // task must always be pushed to the back of the queue, enabling other
